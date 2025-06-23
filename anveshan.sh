@@ -16,59 +16,6 @@ yellow=$'\e[93m'
 magenta=$'\e[95m'
 reset=$'\e[0m'
 
-# print logo
-logo() {
-echo -e "${green}       ,                                             ${reset}"
-echo -e "${green}      ███▓▄,,▄▄▄▓█████▓▄▄,                           ${reset}"
-echo -e "${green}      ██████████▀ \`█████████▌_                      ${reset}"
-echo -e "${green}       █████████    ███████████                      ${reset}"
-echo -e "${green}         \"▀▀▀▀\`     ████████████                   ${reset}"
-echo -e "${green}       ,,▄▄,,__    ▄████████████                     ${reset}"
-echo -e "${green}    ▄███████████████████████████                     ${reset}"
-echo -e "${green}   ████████████${red}φ▓▓▓▓▓╚${green}██████████       ${reset}"
-echo -e "${green}   ███████████${red}╫       ╫${green}█████████       ${reset}"
-echo -e "${green}   ╫██████████${red}▒      ,▓${green}█████████▌      ${reset}"
-echo -e "${green}    ▀████████ ${red}╬█▄▄╔╔φ${green}████████████      ${reset}"
-echo -e "${green}      ▀█████${red}╬█${green}████████████████████     ${reset}"
-echo -e "${green}          ${red}╙▀${green}▀▀▀▀▀▀\`\@hackersthan/█▀  ${red}${current_version}   ${reset}"
-}
-
-logo
-
-
-# check for latest version
-check_for_updates() {
-    echo -e "${yellow}Checking for updates...${reset}"
-
-    local latest_file_version
-    latest_file_version=$(curl -s https://raw.githubusercontent.com/hackersthan/anveshan/refs/heads/main/anveshan.sh | grep 'current_version' | cut -d '=' -f2 | tr -d ' "')
-
-    # Compare versions
-    if [ "$latest_file_version" != "$current_version" ]; then
-        if printf '%s\n' "$latest_file_version" "$current_version" | sort -V | head -n1 | grep -q "$current_version"; then
-            echo -e "${red}A newer version ($latest_file_version) is available!${reset}"
-            read -p "${red}Would you like to update? [y/n]: ${reset}" update_choice
-            if [[ "$update_choice" == [Yy] ]]; then
-                curl -o "$0" https://raw.githubusercontent.com/hackersthan/anveshan/refs/heads/main/anveshan.sh
-                echo -e "${green}Updated to version $latest_file_version. Please re-run the script.${reset}"
-                exit 0
-            else
-                echo -e "${yellow}Proceeding with the current version.${reset}"
-            fi
-        fi
-    else
-        echo -e "${green}You are using the latest version: $current_version${reset}"
-    fi
-}
-
-check_for_updates
-
-
-# screen clear
-scrclr() {
-        clear && logo && echo
-}
-
 #adding help section
 if [[ $1 == "--help" ]] | [[ $1 == "-h" ]]; then
     echo "Usage:"
