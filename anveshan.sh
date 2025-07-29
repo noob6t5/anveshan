@@ -1,23 +1,15 @@
 #!/bin/bash
-# shree_hari
 
-# Basic recon script
-# Usecase : Finding subdomains, urls, js files, parameters
-
-# Current version
-current_version="v1.0.0"
-
-# colors
-blue=$'\e[34m'
-cyan=$'\e[36m'
+# Colors
 red=$'\e[91m'
 green=$'\e[92m'
 yellow=$'\e[93m'
+cyan=$'\e[36m'
 magenta=$'\e[95m'
 reset=$'\e[0m'
 
-#adding help section
-if [[ $1 == "--help" ]] | [[ $1 == "-h" ]]; then
+# Help menu
+if [[ "$1" == "--help" || "$1" == "-h" ]]; then
     echo "Usage:"
     echo "${green}  bash anveshan.sh${reset}"
     echo "Options:"
@@ -25,268 +17,129 @@ if [[ $1 == "--help" ]] | [[ $1 == "-h" ]]; then
     exit 0
 fi
 
-
-# wordlist for DNS Brute-Forcing
-choose_wordlist() {
-    printf "${magenta}Select a wordlist for DNS Brute-Forcing:${reset}\n"
-    printf "${yellow}1) dns.txt  [best-dns-wordlist ++]     [Size: 9M,   Takes longer time]${reset}\n"
-    printf "${yellow}2) dns2.txt [six2dez + dnscan-top10k]  [Size: 112K, Takes less time]${reset}\n"
-    read -p "${green}Enter your choice [1/2]: ${reset}" choice
-
-    case $choice in
-        1)
-            wordlist="$HOME/anveshan/wordlists/dns.txt"
-            ;;
-        2)
-            wordlist="$HOME/anveshan/wordlists/dns2.txt"
-            ;;
-        *)
-            printf "${red}Invalid choice. Exiting.${reset}\n"
-            exit 1
-            ;;
-    esac
-
-    printf "${green}Using wordlist: $wordlist${reset}\n"
-}
-
-
-# reading domain name
+# Ask for domain
 read -p "${magenta}Enter target domain name [ex. target.com] : ${reset}" domain
-echo ""
-
-if [[ -d "$domain-recon" ]]
-then
-        cd "$domain-recon"
-else
-        mkdir "$domain-recon" && cd "$domain-recon"
+if [[ -z "$domain" ]]; then
+    echo -e "${red}[x] No domain provided. Exiting.${reset}"
+    exit 1
 fi
 
+# DNS Brute Reminder
+echo -e "${red}[!] REMINDER: DNS Bruteforcing is currently DISABLED. Do it manually later.${reset}"
+echo ""
 
-# choosing wordlist
-choose_wordlist
-scrclr
+# Recon Directory Setup
+recon_dir="${domain}-recon"
+mkdir -p "$recon_dir" && cd "$recon_dir" || exit
 
-
-# Activating the virtual python environment
+# Activate venv
 VENV_PATH="$HOME/anveshan/venv"
-
 if [[ -d "$VENV_PATH" ]]; then
     source "$VENV_PATH/bin/activate"
     echo "Virtual environment activated."
 else
-    echo "Virtual environment not found. Please run setup_linux.sh first."
+    echo "Virtual environment not found. Run setup_linux.sh first."
     exit 1
 fi
 
+# -------- SUBDOMAIN ENUM --------
+echo "${magenta}[+] running subdominator...${reset}" | pv -qL 20
+subdominator -d "$domain" -o subdominator.txt
 
+echo "${magenta}[+] running amass ...${reset}" | pv -qL 20
+timeout 1200 amass enum -passive -d "$domain" -norecursive -nocolor -config $HOME/anveshan/.config/amass/datasources.yaml -o amassP
+timeout 1200 amass enum -active -d "$domain" -nocolor -config $HOME/anveshan/.config/amass/datasources.yaml -o amassA
+cat amassP amassA 2>/dev/null | cut -d " " -f1 | grep "$domain" | anew amass.txt
 
+echo "${magenta}[+] running knock${reset}" | pv -qL 20
+mkdir -p knockpy/
+knockpy -d "$domain" --recon --save knockpy
+cat knockpy/*.json 2>/dev/null | grep '"domain"' | cut -d '"' -f4 | anew knockpy.txt
 
-#=====================================#
-#=============SUBDOMAINS==============#
-#=====================================#
+echo "${magenta}[+] running findomain${reset}" | pv -qL 20
+findomain -t "$domain" -u findomain.txt
 
+echo "${magenta}[+] running assetfinder${reset}" | pv -qL 20
+assetfinder -subs-only "$domain" | anew assetfinder.txt
 
-#\\\\\\\\\\\\ subdominator ///////////#
-printf "${magenta}[+] running subdominator...${reset}\n" | pv -qL 23
-subdominator -d $domain -o subdominator.txt
-echo
+echo "${magenta}[+] running bbot${reset}" | pv -qL 20
+sudo bbot -t "$domain" -f subdomain-enum  -rf passive -o output -n bbot -y
+cp output/bbot/subdomains.txt bbot.txt 2>/dev/null
 
+echo "${magenta}[+] running shrewdeye${reset}" | pv -qL 20
+bash "$HOME/anveshan/shrewdeye-bash/shrewdeye.sh" -d "$domain"
 
-#\\\\\\\\\\\\\\\ amass ///////////////#
-printf "${magenta}[+] running amass ...${reset}\n" | pv -qL 23
-timeout 1200 amass enum -passive -d $domain -norecursive -nocolor -config $HOME/anveshan/.config/amass/datasources.yaml -o amassP
-timeout 1200 amass enum -active -d $domain -nocolor -config $HOME/anveshan/.config/amass/datasources.yaml -o amassA
-cat amassP amassA | cut -d " " -f1 | grep "$domain" | anew amass.txt
-echo
+echo "${yellow}[*] Combining results...${reset}" | pv -qL 20
+sed "s/\x1B\[[0-9;]*[mK]//g" *.txt | sed 's/\*\.//g' | anew psubdomains.txt > /dev/null
+cp psubdomains.txt subdomains.txt 2>/dev/null
 
+mkdir -p subs-source/
+mv subdominator.txt amass.txt amassA amassP knockpy knockpy.txt findomain.txt assetfinder.txt bbot.txt output/ subs-source/ 2>/dev/null
 
-#\\\\\\\\\\\\\\\ knock ///////////////#
-printf "${magenta}[+] running knock${reset}\n" | pv -qL 23
-mkdir knockpy/
-knockpy -d $domain --recon --save knockpy
-cat knockpy/*.json  | grep '"domain"' | cut -d '"' -f4 | anew knockpy.txt
-echo
+[[ -f subdomains.txt ]] && echo -e "${yellow}[$] Found $(wc -l < subdomains.txt) subdomains${reset}" | pv -qL 20 || echo "${red}[!] subdomains.txt missing${reset}"
 
+# -------- HTTPX --------
+echo "${magenta}[*] Getting webdomains using httpx ${reset}" | pv -qL 20
+httpx-go -l subdomains.txt -ss -pa -sc -fr -title -td -location -retries 3 -silent -nc -o httpx.txt
+cut -d " " -f1 httpx.txt | anew webdomains.txt
 
-#\\\\\\\\\\\\\ findomain /////////////#
-printf "${magenta}[+] running findomain${reset}\n" | pv -qL 23
-findomain -t $domain -u findomain.txt
-echo
+[[ -d output ]] && mv output/ screenshots/
 
+# -------- IP Collection --------
+grep -Eo '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' httpx.txt | anew ips.txt
+cat subs-source/knockpy/*.json 2>/dev/null | jq '.[] .ip[]' | cut -d '"' -f2 | anew ips.txt
 
-#\\\\\\\\\\\\ assetfinder ////////////#
-printf "${magenta}[+] running assetfinder${reset}\n" | pv -qL 23
-assetfinder -subs-only $domain | anew assetfinder.txt
-echo
+[[ -f webdomains.txt ]] && echo -e "${yellow}[$] Found $(wc -l < webdomains.txt) webdomains${reset}" | pv -qL 20
 
-
-#\\\\\\\\\\\\\\\ bbot ////////////////#
-printf "${magenta}[+] running bbot${reset}\n" | pv -qL 23
-sudo bbot -t $domain -f subdomain-enum  -rf passive -o output -n bbot -y
-cp output/bbot/subdomains.txt bbot.txt
-echo
-
-
-#\\\\\\\\\\\\\ shrewdeye /////////////#
-printf "${magenta}[+] running shrewdeye${reset}\n" | pv -qL 23
-bash $HOME/anveshan/shrewdeye-bash/shrewdeye.sh -d $domain
-echo
-
-#\\\\\\\\\\\\\\ combine //////////////#
-printf "${yellow}[*] combine all the result${reset}\n" | pv -qL 23
-sed "s/\x1B\[[0-9;]*[mK]//g" *.txt | sed 's/\*\.//g' | anew psubdomains.txt
-
-
-
-#\\\\\\\\\\\\ screen clear ///////////#
-scrclr
-printf "${yellow}[+] dns bruteforce${reset}\n" | pv -qL 23
-puredns bruteforce "$wordlist" $domain -r $HOME/anveshan/wordlists/resolvers.txt -w bruteforce.txt
-echo 
-
-printf "${yellow}[+] resolving subdomains${reset}\n" | pv -qL 23
-cat psubdomains.txt bruteforce.txt | anew lets-resolve.txt
-puredns resolve lets-resolve.txt -r $HOME/anveshan/wordlists/resolvers.txt -w resolved.txt
-cat resolved.txt | anew subdomains.txt
-echo "$domain" | anew subdomains.txt
-
-#\\\\\\\\\\\\\\ cleanup //////////////#
-mkdir subs-source/
-mv subdominator.txt subs-source/
-mv amass.txt subs-source/
-mv amassA subs-source/
-mv amassP subs-source/
-mv knockpy subs-source/
-mv knockpy.txt subs-source/
-mv findomain.txt subs-source/
-mv assetfinder.txt subs-source
-mv bbot.txt subs-source/
-mv output/ subs-source/bbot-output/
-mv *output.txt subs-source/
-rm lets-resolve.txt
-rm resolved.txt
-rm bruteforce.txt
-
-
-#\\\\\\\\\\\\ screen clear ///////////#
-scrclr
-printf "${yellow}[$] Found $(cat subdomains.txt | wc -l) subdomains${reset}\n" | pv -qL 23
-sleep 2 && echo
-
-#\\\\\\\\\\\\\\\ httpx ///////////////#
-printf "${magenta}[*] getting webdomains using httpx ${reset}\n" | pv -qL 23
-$HOME/go/bin/httpx -l subdomains.txt -ss -pa -sc -fr -title -td -location -retries 3 -silent -nc -o httpx.txt
-cat httpx.txt | cut -d " " -f1 | anew webdomains.txt
-mv output/ screenshots/
-
-#\\\\\\\\\\\\\\\\ ips ////////////////#
-cat httpx.txt | grep -E -o '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | anew ips.txt
-cat subs-source/knockpy/*.json | jq '.[] .ip[]' | cut -d '"' -f2 | anew ips.txt
-
-
-#\\\\\\\\\\\\ screen clear ///////////#
-scrclr
-printf "${yellow}[$] Found $(cat subdomains.txt | wc -l) subdomains${reset}\n" | pv -qL 23
-printf "${yellow}[$] Found $(cat webdomains.txt | wc -l) webdomains${reset}\n" | pv -qL 23
-sleep 3 && echo
-
-#\\\\\\\\\\\\ port scanning //////////#
-printf "${magenta}[+] port scanning using naabu : top 1000 ports ${reset}\n" | pv -qL 23
+# -------- Port Scanning --------
+echo "${magenta}[+] Scanning ports using naabu${reset}" | pv -qL 20
 naabu -list subdomains.txt -tp 1000 -rate 2000 -o naabu.txt
-#cat ips.txt | cf-check | naabu -tp 1000 -rate 2000 -o naabu-ip.txt
-echo && echo
-printf "${yellow}[$] Found $(cat naabu.txt | wc -l) open web_ports${reset}\n" | pv -qL 23
-#printf "${yellow}[$] Found $(cat naabu-ip.txt | wc -l) open ports on IPs${reset}\n" | pv -qL 23
-sleep 3
+echo "${yellow}[$] Found $(wc -l < naabu.txt) open ports${reset}" | pv -qL 20
 
+# -------- URL Collection --------
+echo "${magenta}[*] Finding URLs${reset}" | pv -qL 20
+mkdir -p urls/ && cd urls/
 
+echo "${yellow} [+] waymore ${reset}" | pv -qL 20
+waymore -i "$domain" -mode U -c $HOME/anveshan/.config/waymore/config.yml -oU waymore.txt
 
-#=====================================#
-#================URLS=================#
-#=====================================#
-
-#\\\\\\\\\\\\ screen clear ///////////#
-scrclr
-
-printf "${magenta}[*] finding urls ${reset}\n" | pv -qL 23
-mkdir urls/ && cd urls/
-
-printf "${yellow} [+] waymore ${reset}\n" | pv -qL 23
-waymore -i $domain -mode U -c $HOME/anveshan/.config/waymore/config.yml -oU waymore.txt
-
-printf "${yellow} [+] getJS ${reset}\n" | pv -qL 23
+echo "${yellow} [+] getJS ${reset}" | pv -qL 20
 getJS --input ../webdomains.txt --output getjs.txt --complete
 
-printf "${yellow} [+] xnlinkfinder ${reset}\n" | pv -qL 23
-xnLinkFinder -i waymore.txt -d 3 -sf $domain -o xnUrls.txt -op xnParams.txt
+echo "${yellow} [+] xnLinkFinder ${reset}" | pv -qL 20
+xnLinkFinder -i waymore.txt -d 3 -sf "$domain" -o xnUrls.txt -op xnParams.txt
 
-printf "${yellow} [+] finding parameters ${reset}\n" | pv -qL 23
-python3 $HOME/anveshan/tools/ParamSpider/paramspider.py --domain $domain --level high | uro | anew parameters.txt
+echo "${yellow} [+] ParamSpider ${reset}" | pv -qL 20
+python3 $HOME/anveshan/tools/ParamSpider/paramspider.py --domain "$domain" --level high | uro | anew parameters.txt
 
-printf "${yellow} [+] Katan for js files ${reset}\n" | pv -qL 23
+echo "${yellow} [+] Katana ${reset}" | pv -qL 20
 katana -list ../webdomains.txt -jc -em js,json,jsp,jsx,ts,tsx,mjs -d 3 -nc -o katana.txt
 
-# combine
+# Combine URLs
 sed "s/\x1B\[[0-9;]*[mK]//g" waymore.txt getjs.txt xnUrls.txt parameters.txt katana.txt | anew urls.txt
-mkdir urls-source/
-mv waymore.txt urls-source/
-mv getjs.txt urls-source/
-mv xnUrls.txt urls-source/
-mv katana.txt urls-source/
+mkdir -p urls-source/ && mv waymore.txt getjs.txt xnUrls.txt katana.txt urls-source/
 
+# -------- JS Files --------
+echo "${magenta}[*] Extracting live JS files${reset}" | pv -qL 20
+cat urls.txt | grep -Ei ".+\.js(?:on|p|x)?$" | httpx -mc 200 | anew jsurls.txt
+httpx -l jsurls.txt -sr -sc -mc 200 -ct -nc | grep -v "text/html" | cut -d " " -f1 | anew jsfiles.txt
+mv output/ ../js-source/ 2>/dev/null
 
-
-#=====================================#
-#=================JS==================#
-#=====================================#
-
-
-#\\\\\\\\\\\\ screen clear ///////////#
-scrclr
-
-printf "${magenta}[*] extracting js files and finding secrets ${reset}\n" | pv -qL 23
-cat urls.txt | grep -Ei ".+\.js(?:on|p|x)?$" | $HOME/go/bin/httpx -mc 200 | anew jsurls.txt
-
-#\\\\\\\\getting live js files////////#
-$HOME/go/bin/httpx -l jsurls.txt -sr -sc -mc 200 -ct -nc | grep -v "text/html" | cut -d " " -f1 | anew jsfiles.txt
-mv output/ js-source/
-
-#\\\\\\\nuclei on live js files///////#
-scrclr
-printf "${magenta}[*] finding secrets inside $(cat jsfiles.txt | wc -l) js files${reset}\n" | pv -qL 23
+# -------- Nuclei on JS --------
+echo "${magenta}[*] Scanning JS files with Nuclei${reset}" | pv -qL 20
 cat jsfiles.txt | nuclei -t $HOME/nuclei-templates/http/exposures/tokens/ | tee -a js_nuclei.txt
 mv js_nuclei.txt ../
 
-
-#\\\\\\\trufflehog on source code/////#
-printf "${magenta}[*] trufflehog scanning on webdomains source${reset}\n" | pv -qL 30
-trufflehog filesystem js-source/response | tee -a trufflehog-src.txt
+# -------- Trufflehog --------
+echo "${magenta}[*] Trufflehog scanning JS source${reset}" | pv -qL 20
+trufflehog filesystem ../js-source/response | tee -a trufflehog-src.txt
 mv trufflehog-src.txt ../ && cd ../
 
-
-
-
-#=====================================#
-#==============HIGHLIGHT==============#
-#=====================================#
-scrclr
-logo
-printf "${magenta}[*] script executed successfully, here are the key highlights${reset}\n" | pv -qL 23
-echo
-printf "${red} [+] Subdomains${reset}\n" | pv -qL 23
-printf "${yellow} [$] Found %d subdomains${reset}\n" "$(cat subdomains.txt | wc -l)" | pv -qL 23
-printf "${yellow} [$] Found %d webdomains${reset}\n" "$(cat webdomains.txt | wc -l)" | pv -qL 23
-echo
-printf "${red} [+] Ports${reset}\n" | pv -qL 23
-printf "${yellow} [$] Found %d open web_ports${reset}\n" "$(cat naabu.txt | wc -l)" | pv -qL 23
-echo
-printf "${red} [+] URLs${reset}\n" | pv -qL 23
-printf "${yellow} [$] Found %d urls${reset}\n" "$(cat urls/urls.txt | wc -l)" | pv -qL 23
-echo
-printf "${red} [+] Scanning${reset}\n" | pv -qL 23
-printf "${yellow} [$] Found %d nuclei secrets in %d js files${reset}\n" "$(cat js_nuclei.txt | wc -l)" "$(cat urls/jsfiles.txt | wc -l)" | pv -qL 23
-printf "${yellow} [$] Found %d trufflehog secrets in js files source code${reset}\n" "$(cat trufflehog-src.txt | grep -i "raw" | wc -l)" | pv -qL 23
-echo
-printf "${red} [&] Happy Hacking ;D${reset}\n" | pv -qL 23
-
-# iti
+# -------- HIGHLIGHTS --------
+echo "${magenta}[*] Final Recon Stats${reset}" | pv -qL 20
+echo -e "${red} [+] Subdomains: ${yellow}$(wc -l < subdomains.txt 2>/dev/null)${reset}"
+echo -e "${red} [+] Webdomains: ${yellow}$(wc -l < webdomains.txt 2>/dev/null)${reset}"
+echo -e "${red} [+] Open Ports: ${yellow}$(wc -l < naabu.txt 2>/dev/null)${reset}"
+echo -e "${red} [+] URLs Found: ${yellow}$(wc -l < urls/urls.txt 2>/dev/null)${reset}"
+echo -e "${red} [+] Nuclei Secrets: ${yellow}$(wc -l < js_nuclei.txt 2>/dev/null)${reset}"
+echo -e "${red} [+] Trufflehog Secrets: ${yellow}$(grep -i 'raw' trufflehog-src.txt 2>/dev/null | wc -l)${reset}"
