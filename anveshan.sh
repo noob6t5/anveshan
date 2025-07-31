@@ -8,21 +8,12 @@ magenta=$'\e[95m'
 reset=$'\e[0m'
 
 export PATH=$PATH:$HOME/.local/bin:$HOME/go/bin
-# Help menu
-if [[ "$1" == "--help" || "$1" == "-h" ]]; then
-    echo "Usage:"
-    echo "${green}  bash anveshan.sh${reset}"
-    echo "Options:"
-    echo "${green}  --help  Show this help message${reset}"
-    exit 0
-fi
 # Ask for domain
 read -p "${magenta}Enter target domain name [ex. target.com] : ${reset}" domain
 if [[ -z "$domain" ]]; then
     echo -e "${red}[x] No domain provided. Exiting.${reset}"
     exit 1
 fi
-
 # DNS Brute Reminder
 echo -e "${red}[!] REMINDER: DNS Bruteforcing is currently DISABLED. Do it manually later.${reset}"
 echo ""
@@ -122,15 +113,25 @@ getJS --input ../webdomains.txt --output getjs.txt --complete
 echo "${yellow} [+] xnLinkFinder ${reset}" | pv -qL 20
 xnLinkFinder -i waymore.txt -d 3 -sf "$domain" -o xnUrls.txt -op xnParams.txt
 
+echo "${magenta}[+] running hakrawler...${reset}" | pv -qL 20
+cat ../webdomains.txt | hakrawler -depth 2 -subs -t 20 -timeout 10 > hakrawler.txt 2>/dev/null
+
+echo "${magenta}[+] running gau...${reset}" | pv -qL 20
+gau --threads 10 --subs --o gau.txt $(cat ../webdomains.txt) 2>/dev/null
+
+echo "${yellow}[*] Merging all URL sources...${reset}" | pv -qL 20
+# Merge ALL url source files into urls.txt, including hakrawler and gau
+sed "s/\x1B\[[0-9;]*[mK]//g" waymore.txt getjs.txt xnUrls.txt parameters.txt katana.txt hakrawler.txt gau.txt | anew urls.txt
+
 echo "${yellow} [+] ParamSpider ${reset}" | pv -qL 20
 paramspider --domain "$domain" --level high | uro | anew parameters.txt
 
 echo "${yellow} [+] Katana ${reset}" | pv -qL 20
 katana -list ../webdomains.txt -jc -em js,json,jsp,jsx,ts,tsx,mjs -d 3 -nc -o katana.txt
 
-# Combine URLs
-sed "s/\x1B\[[0-9;]*[mK]//g" waymore.txt getjs.txt xnUrls.txt parameters.txt katana.txt | anew urls.txt
-mkdir -p urls-source/ && mv waymore.txt getjs.txt xnUrls.txt katana.txt urls-source/
+# Move processed URL files into backup folder to keep workspace clean
+mkdir -p urls-source/
+mv waymore.txt getjs.txt xnUrls.txt katana.txt hakrawler.txt gau.txt urls-source/ 2>/dev/null
 
 # -------- JS Files --------
 echo "${magenta}[*] Extracting live JS files${reset}" | pv -qL 20
@@ -155,4 +156,3 @@ echo -e "${red} [+] Open Ports: ${yellow}$(wc -l < naabu.txt 2>/dev/null)${reset
 echo -e "${red} [+] URLs Found: ${yellow}$(wc -l < urls/urls.txt 2>/dev/null)${reset}"
 echo -e "${red} [+] Nuclei Secrets: ${yellow}$(wc -l < js_nuclei.txt 2>/dev/null)${reset}"
 echo -e "${red} [+] Trufflehog Secrets: ${yellow}$(grep -i 'raw' trufflehog-src.txt 2>/dev/null | wc -l)${reset}"
-
