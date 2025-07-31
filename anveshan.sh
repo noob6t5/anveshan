@@ -1,5 +1,4 @@
 #!/bin/bash
-
 # Colors
 red=$'\e[91m'
 green=$'\e[92m'
@@ -8,6 +7,7 @@ cyan=$'\e[36m'
 magenta=$'\e[95m'
 reset=$'\e[0m'
 
+export PATH=$PATH:$HOME/.local/bin:$HOME/go/bin
 # Help menu
 if [[ "$1" == "--help" || "$1" == "-h" ]]; then
     echo "Usage:"
@@ -16,7 +16,6 @@ if [[ "$1" == "--help" || "$1" == "-h" ]]; then
     echo "${green}  --help  Show this help message${reset}"
     exit 0
 fi
-
 # Ask for domain
 read -p "${magenta}Enter target domain name [ex. target.com] : ${reset}" domain
 if [[ -z "$domain" ]]; then
@@ -38,7 +37,7 @@ if [[ -d "$VENV_PATH" ]]; then
     source "$VENV_PATH/bin/activate"
     echo "Virtual environment activated."
 else
-    echo "Virtual environment not found. Run setup_linux.sh first."
+    echo "Virtual environment not found. global tools assumed.${reset}."
     exit 1
 fi
 
@@ -62,8 +61,12 @@ findomain -t "$domain" -u findomain.txt
 echo "${magenta}[+] running assetfinder${reset}" | pv -qL 20
 assetfinder -subs-only "$domain" | anew assetfinder.txt
 
+echo "${magenta}[+] running subfinder${reset}" | pv -qL 20
+subfinder -d "$domain" -all -silent -o subfinder.txt
+cat subfinder.txt | anew subfinder_clean.txt
+
 echo "${magenta}[+] running bbot${reset}" | pv -qL 20
-sudo bbot -t "$domain" -f subdomain-enum  -rf passive -o output -n bbot -y
+"$HOME/.local/bin/bbot" -t "$domain" -f subdomain-enum  -rf passive -o output -n bbot -y
 cp output/bbot/subdomains.txt bbot.txt 2>/dev/null
 
 echo "${magenta}[+] running shrewdeye${reset}" | pv -qL 20
@@ -74,7 +77,7 @@ sed "s/\x1B\[[0-9;]*[mK]//g" *.txt | sed 's/\*\.//g' | anew psubdomains.txt > /d
 cp psubdomains.txt subdomains.txt 2>/dev/null
 
 mkdir -p subs-source/
-mv subdominator.txt amass.txt amassA amassP knockpy knockpy.txt findomain.txt assetfinder.txt bbot.txt output/ subs-source/ 2>/dev/null
+mv subdominator.txt amass.txt amassA amassP knockpy knockpy.txt findomain.txt assetfinder.txt subfinder_clean.txt bbot.txt output/ subs-source/ 2>/dev/null
 
 [[ -f subdomains.txt ]] && echo -e "${yellow}[$] Found $(wc -l < subdomains.txt) subdomains${reset}" | pv -qL 20 || echo "${red}[!] subdomains.txt missing${reset}"
 
@@ -83,7 +86,17 @@ echo "${magenta}[*] Getting webdomains using httpx ${reset}" | pv -qL 20
 httpx-go -l subdomains.txt -ss -pa -sc -fr -title -td -location -retries 3 -silent -nc -o httpx.txt
 cut -d " " -f1 httpx.txt | anew webdomains.txt
 
-[[ -d output ]] && mv output/ screenshots/
+# --- 🔥 Flatten Screenshot Output ---
+if [[ -d output ]]; then
+    mkdir -p screenshots/
+    find output -type f -name '*.png' | while read file; do
+        # Extract subdomain folder name and flatten
+        subdomain=$(dirname "$file" | sed 's|output/||;s|/.*||')
+        filename=$(basename "$file")
+        cp "$file" "screenshots/${subdomain}--${filename}"
+    done
+    rm -rf output/
+fi
 
 # -------- IP Collection --------
 grep -Eo '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' httpx.txt | anew ips.txt
@@ -110,7 +123,7 @@ echo "${yellow} [+] xnLinkFinder ${reset}" | pv -qL 20
 xnLinkFinder -i waymore.txt -d 3 -sf "$domain" -o xnUrls.txt -op xnParams.txt
 
 echo "${yellow} [+] ParamSpider ${reset}" | pv -qL 20
-python3 $HOME/anveshan/tools/ParamSpider/paramspider.py --domain "$domain" --level high | uro | anew parameters.txt
+paramspider --domain "$domain" --level high | uro | anew parameters.txt
 
 echo "${yellow} [+] Katana ${reset}" | pv -qL 20
 katana -list ../webdomains.txt -jc -em js,json,jsp,jsx,ts,tsx,mjs -d 3 -nc -o katana.txt
@@ -121,10 +134,9 @@ mkdir -p urls-source/ && mv waymore.txt getjs.txt xnUrls.txt katana.txt urls-sou
 
 # -------- JS Files --------
 echo "${magenta}[*] Extracting live JS files${reset}" | pv -qL 20
-cat urls.txt | grep -Ei ".+\.js(?:on|p|x)?$" | httpx -mc 200 | anew jsurls.txt
-httpx -l jsurls.txt -sr -sc -mc 200 -ct -nc | grep -v "text/html" | cut -d " " -f1 | anew jsfiles.txt
+cat urls.txt | grep -Ei ".+\.js(?:on|p|x)?$" | httpx-go -mc 200 | anew jsurls.txt
+httpx-go -l jsurls.txt -sr -sc -mc 200 -ct -nc | grep -v "text/html" | cut -d " " -f1 | anew jsfiles.txt
 mv output/ ../js-source/ 2>/dev/null
-
 # -------- Nuclei on JS --------
 echo "${magenta}[*] Scanning JS files with Nuclei${reset}" | pv -qL 20
 cat jsfiles.txt | nuclei -t $HOME/nuclei-templates/http/exposures/tokens/ | tee -a js_nuclei.txt
@@ -143,3 +155,4 @@ echo -e "${red} [+] Open Ports: ${yellow}$(wc -l < naabu.txt 2>/dev/null)${reset
 echo -e "${red} [+] URLs Found: ${yellow}$(wc -l < urls/urls.txt 2>/dev/null)${reset}"
 echo -e "${red} [+] Nuclei Secrets: ${yellow}$(wc -l < js_nuclei.txt 2>/dev/null)${reset}"
 echo -e "${red} [+] Trufflehog Secrets: ${yellow}$(grep -i 'raw' trufflehog-src.txt 2>/dev/null | wc -l)${reset}"
+
