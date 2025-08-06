@@ -1,158 +1,135 @@
 #!/bin/bash
+
 # Colors
-red=$'\e[91m'
-green=$'\e[92m'
-yellow=$'\e[93m'
-cyan=$'\e[36m'
-magenta=$'\e[95m'
-reset=$'\e[0m'
-
+red=$'\e[91m'; green=$'\e[92m'; yellow=$'\e[93m'; cyan=$'\e[36m'; magenta=$'\e[95m'; reset=$'\e[0m'
 export PATH=$PATH:$HOME/.local/bin:$HOME/go/bin
-# Ask for domain
-read -p "${magenta}Enter target domain name [ex. target.com] : ${reset}" domain
-if [[ -z "$domain" ]]; then
-    echo -e "${red}[x] No domain provided. Exiting.${reset}"
-    exit 1
-fi
-# DNS Brute Reminder
-echo -e "${red}[!] REMINDER: DNS Bruteforcing is currently DISABLED. Do it manually later.${reset}"
-echo ""
 
-# Recon Directory Setup
+read -p "${magenta}Enter target domain [ex: target.com]: ${reset}" domain
+[[ -z "$domain" ]] && { echo -e "${red}[x] No domain provided. Exiting.${reset}"; exit 1; }
+
+echo -e "${red}[!] DNS Bruteforce is DISABLED. Manually handle wildcard crap.${reset}"
+
+# Setup
 recon_dir="${domain}-recon"
 mkdir -p "$recon_dir" && cd "$recon_dir" || exit
 
-# Activate venv
 VENV_PATH="$HOME/anveshan/venv"
-if [[ -d "$VENV_PATH" ]]; then
-    source "$VENV_PATH/bin/activate"
-    echo "Virtual environment activated."
-else
-    echo "Virtual environment not found. global tools assumed.${reset}."
-    exit 1
-fi
+[[ -d "$VENV_PATH" ]] && source "$VENV_PATH/bin/activate" && echo "[✓] Virtualenv activated" || echo "[!] No virtualenv, using global tools."
 
-# -------- SUBDOMAIN ENUM --------
-echo "${magenta}[+] running subdominator...${reset}" | pv -qL 20
-subdominator -d "$domain" -o subdominator.txt
+# Trap setup
+trap 'echo -e "${red}[!] Script interrupted. Moving to next block.${reset}"' SIGINT
 
-echo "${magenta}[+] running amass ...${reset}" | pv -qL 20
-timeout 1200 amass enum -passive -d "$domain" -norecursive -nocolor -config $HOME/anveshan/.config/amass/datasources.yaml -o amassP
-timeout 1200 amass enum -active -d "$domain" -nocolor -config $HOME/anveshan/.config/amass/datasources.yaml -o amassA
-cat amassP amassA 2>/dev/null | cut -d " " -f1 | grep "$domain" | anew amass.txt
+# --------------------
+# SUBDOMAIN ENUM BLOCK
+# --------------------
 
-echo "${magenta}[+] running knock${reset}" | pv -qL 20
-mkdir -p knockpy/
-knockpy -d "$domain" --recon --save knockpy
-cat knockpy/*.json 2>/dev/null | grep '"domain"' | cut -d '"' -f4 | anew knockpy.txt
+echo -e "${magenta}[+] Firing subdomain enum tools...${reset}"
+mkdir -p knockpy output
 
-echo "${magenta}[+] running findomain${reset}" | pv -qL 20
-findomain -t "$domain" -u findomain.txt
+timeout 1200 amass enum -passive -d "$domain" -norecursive -nocolor -config $HOME/anveshan/.config/amass/datasources.yaml -o amassP.txt &
+pid1=$!
+timeout 1200 amass enum -active -d "$domain" -nocolor -config $HOME/anveshan/.config/amass/datasources.yaml -o amassA.txt &
+pid2=$!
+findomain -t "$domain" -q -u findomain.txt &
+pid3=$!
+assetfinder --subs-only "$domain" | anew assetfinder.txt &
+pid4=$!
+subfinder -d "$domain" -all -silent -o subfinder.txt &
+pid5=$!
+knockpy -d "$domain" --recon --save knockpy 2>/dev/null &
+pid6=$!
+bbot -t "$domain" -p subdomain-enum -rf passive -o output/bbot.txt --json --no-deps  &
+pid7=$!
 
-echo "${magenta}[+] running assetfinder${reset}" | pv -qL 20
-assetfinder -subs-only "$domain" | anew assetfinder.txt
+wait $pid1 $pid2 $pid3 $pid4 $pid5 $pid6 $pid7
 
-echo "${magenta}[+] running subfinder${reset}" | pv -qL 20
-subfinder -d "$domain" -all -silent -o subfinder.txt
-cat subfinder.txt | anew subfinder_clean.txt
+[[ -f knockpy/knockpy.json ]] && jq -r '.[].domain' knockpy/knockpy.json | anew knockpy.txt
 
-echo "${magenta}[+] running bbot${reset}" | pv -qL 20
-"$HOME/.local/bin/bbot" -t "$domain" -f subdomain-enum  -rf passive -o output -n bbot -y
-cp output/bbot/subdomains.txt bbot.txt 2>/dev/null
+cat amassP.txt amassA.txt knockpy.txt findomain.txt assetfinder.txt subfinder.txt output/bbot.txt 2>/dev/null | sed 's/\*\.//' | sort -u | anew psubdomains.txt
+cp psubdomains.txt subdomains.txt
 
-echo "${magenta}[+] running shrewdeye${reset}" | pv -qL 20
-bash "$HOME/anveshan/shrewdeye-bash/shrewdeye.sh" -d "$domain"
+echo -e "${yellow}[✓] Total subdomains: $(wc -l < subdomains.txt)${reset}"
 
-echo "${yellow}[*] Combining results...${reset}" | pv -qL 20
-sed "s/\x1B\[[0-9;]*[mK]//g" *.txt | sed 's/\*\.//g' | anew psubdomains.txt > /dev/null
-cp psubdomains.txt subdomains.txt 2>/dev/null
+# --------------------
+# HTTPX - LIVE HOSTS
+# --------------------
 
-mkdir -p subs-source/
-mv subdominator.txt amass.txt amassA amassP knockpy knockpy.txt findomain.txt assetfinder.txt subfinder_clean.txt bbot.txt output/ subs-source/ 2>/dev/null
+echo -e "${magenta}[*] Probing for live hosts with httpx...${reset}"
+httpx-go -l subdomains.txt -threads 50 -silent -title -sc -ip -o httpx.txt
 
-[[ -f subdomains.txt ]] && echo -e "${yellow}[$] Found $(wc -l < subdomains.txt) subdomains${reset}" | pv -qL 20 || echo "${red}[!] subdomains.txt missing${reset}"
+awk '{print $1}' httpx.txt | grep -E '^https?://' | anew webdomains.txt
+echo -e "${yellow}[✓] Live web domains: $(wc -l < webdomains.txt)${reset}"
 
-# -------- HTTPX --------
-echo "${magenta}[*] Getting webdomains using httpx ${reset}" | pv -qL 20
-httpx-go -l subdomains.txt -ss -pa -sc -fr -title -td -location -retries 3 -silent -nc -o httpx.txt
-cut -d " " -f1 httpx.txt | anew webdomains.txt
+# --------------------
+# SCREENSHOT MODULE
+# --------------------
 
-# --- 🔥 Flatten Screenshot Output ---
-if [[ -d output ]]; then
-    mkdir -p screenshots/
-    find output -type f -name '*.png' | while read file; do
-        # Extract subdomain folder name and flatten
-        subdomain=$(dirname "$file" | sed 's|output/||;s|/.*||')
-        filename=$(basename "$file")
-        cp "$file" "screenshots/${subdomain}--${filename}"
-    done
-    rm -rf output/
-fi
+echo -e "${cyan}[*] Taking screenshots with gowitness...${reset}"
+mkdir -p screenshots/
+gowitness scan file -f webdomains.txt --destination screenshots/
+echo -e "${yellow}[✓] Screenshots captured.${reset}"
 
-# -------- IP Collection --------
+# --------------------
+# NAABU - PORT SCAN
+# --------------------
+
+echo -e "${magenta}[+] Running naabu on subdomains...${reset}"
+naabu -list subdomains.txt -tp 1000 -rate 2000 -o naabu.txt
+echo -e "${yellow}[✓] Open ports found: $(wc -l < naabu.txt)${reset}"
+
+# --------------------
+# URL & JS ENUM BLOCK
+# --------------------
+
+echo -e "${magenta}[*] Collecting URLs, JS & Params...${reset}"
+mkdir -p urls && cd urls/
+
+waymore -i "$domain" -mode U -c $HOME/anveshan/.config/waymore/config.yml -oU waymore.txt
+getJS --input ../webdomains.txt --output getjs.txt --complete
+xnLinkFinder -i waymore.txt -d 3 -sf "$domain" -o xnUrls.txt -op xnParams.txt
+cat ../webdomains.txt | hakrawler -depth 2 -subs -t 20 -timeout 10 > hakrawler.txt 2>/dev/null
+cat ../webdomains.txt | gau --threads 10 --subs > gau.txt 2>/dev/null
+katana -list ../webdomains.txt -jc -em js,json,jsp,jsx,ts,tsx,mjs -d 3 -nc -o katana.txt
+
+cat waymore.txt getjs.txt xnUrls.txt xnParams.txt hakrawler.txt gau.txt katana.txt | sed 's/\x1B\[[0-9;]*[mK]//g' | anew urls.txt
+
+paramspider --domain "$domain" | uro | anew parameters.txt
+mkdir -p urls-source/
+mv waymore.txt getjs.txt xnUrls.txt katana.txt hakrawler.txt gau.txt urls-source/ 2>/dev/null
+cd ..
+
+# --------------------
+# JS + NUCLEI + TRUFFLEHOG
+# --------------------
+
+echo -e "${magenta}[*] Extracting & analyzing JS files...${reset}"
+cat urls/urls.txt | grep -Ei ".+\.js(?:on|p|x)?$" | httpx-go -mc 200 -silent | anew jsurls.txt
+httpx-go -l jsurls.txt -sr -ss -pa -title -sc -mc 200 -ct -nc | grep -v "text/html" | cut -d " " -f1 | anew jsfiles.txt
+
+mv output/ js-source/ 2>/dev/null
+
+echo -e "${magenta}[*] Running nuclei for secrets in JS...${reset}"
+cat jsfiles.txt | nuclei -t $HOME/nuclei-templates/http/exposures/tokens/ | tee -a js_nuclei.txt
+
+echo -e "${magenta}[*] Scanning JS responses with trufflehog...${reset}"
+trufflehog filesystem js-source/response | tee -a trufflehog-src.txt
+
+# --------------------
+# IP ENUM
+# --------------------
+
 grep -Eo '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' httpx.txt | anew ips.txt
 cat subs-source/knockpy/*.json 2>/dev/null | jq '.[] .ip[]' | cut -d '"' -f2 | anew ips.txt
 
-[[ -f webdomains.txt ]] && echo -e "${yellow}[$] Found $(wc -l < webdomains.txt) webdomains${reset}" | pv -qL 20
+# --------------------
+# FINAL STATS
+# --------------------
 
-# -------- Port Scanning --------
-echo "${magenta}[+] Scanning ports using naabu${reset}" | pv -qL 20
-naabu -list subdomains.txt -tp 1000 -rate 2000 -o naabu.txt
-echo "${yellow}[$] Found $(wc -l < naabu.txt) open ports${reset}" | pv -qL 20
-
-# -------- URL Collection --------
-echo "${magenta}[*] Finding URLs${reset}" | pv -qL 20
-mkdir -p urls/ && cd urls/
-
-echo "${yellow} [+] waymore ${reset}" | pv -qL 20
-waymore -i "$domain" -mode U -c $HOME/anveshan/.config/waymore/config.yml -oU waymore.txt
-
-echo "${yellow} [+] getJS ${reset}" | pv -qL 20
-getJS --input ../webdomains.txt --output getjs.txt --complete
-
-echo "${yellow} [+] xnLinkFinder ${reset}" | pv -qL 20
-xnLinkFinder -i waymore.txt -d 3 -sf "$domain" -o xnUrls.txt -op xnParams.txt
-
-echo "${magenta}[+] running hakrawler...${reset}" | pv -qL 20
-cat ../webdomains.txt | hakrawler -depth 2 -subs -t 20 -timeout 10 > hakrawler.txt 2>/dev/null
-
-echo "${magenta}[+] running gau...${reset}" | pv -qL 20
-gau --threads 10 --subs --o gau.txt $(cat ../webdomains.txt) 2>/dev/null
-
-echo "${yellow}[*] Merging all URL sources...${reset}" | pv -qL 20
-# Merge ALL url source files into urls.txt, including hakrawler and gau
-sed "s/\x1B\[[0-9;]*[mK]//g" waymore.txt getjs.txt xnUrls.txt parameters.txt katana.txt hakrawler.txt gau.txt | anew urls.txt
-
-echo "${yellow} [+] ParamSpider ${reset}" | pv -qL 20
-paramspider --domain "$domain" --level high | uro | anew parameters.txt
-
-echo "${yellow} [+] Katana ${reset}" | pv -qL 20
-katana -list ../webdomains.txt -jc -em js,json,jsp,jsx,ts,tsx,mjs -d 3 -nc -o katana.txt
-
-# Move processed URL files into backup folder to keep workspace clean
-mkdir -p urls-source/
-mv waymore.txt getjs.txt xnUrls.txt katana.txt hakrawler.txt gau.txt urls-source/ 2>/dev/null
-
-# -------- JS Files --------
-echo "${magenta}[*] Extracting live JS files${reset}" | pv -qL 20
-cat urls.txt | grep -Ei ".+\.js(?:on|p|x)?$" | httpx-go -mc 200 | anew jsurls.txt
-httpx-go -l jsurls.txt -sr -sc -mc 200 -ct -nc | grep -v "text/html" | cut -d " " -f1 | anew jsfiles.txt
-mv output/ ../js-source/ 2>/dev/null
-# -------- Nuclei on JS --------
-echo "${magenta}[*] Scanning JS files with Nuclei${reset}" | pv -qL 20
-cat jsfiles.txt | nuclei -t $HOME/nuclei-templates/http/exposures/tokens/ | tee -a js_nuclei.txt
-mv js_nuclei.txt ../
-
-# -------- Trufflehog --------
-echo "${magenta}[*] Trufflehog scanning JS source${reset}" | pv -qL 20
-trufflehog filesystem ../js-source/response | tee -a trufflehog-src.txt
-mv trufflehog-src.txt ../ && cd ../
-
-# -------- HIGHLIGHTS --------
-echo "${magenta}[*] Final Recon Stats${reset}" | pv -qL 20
-echo -e "${red} [+] Subdomains: ${yellow}$(wc -l < subdomains.txt 2>/dev/null)${reset}"
-echo -e "${red} [+] Webdomains: ${yellow}$(wc -l < webdomains.txt 2>/dev/null)${reset}"
-echo -e "${red} [+] Open Ports: ${yellow}$(wc -l < naabu.txt 2>/dev/null)${reset}"
-echo -e "${red} [+] URLs Found: ${yellow}$(wc -l < urls/urls.txt 2>/dev/null)${reset}"
-echo -e "${red} [+] Nuclei Secrets: ${yellow}$(wc -l < js_nuclei.txt 2>/dev/null)${reset}"
-echo -e "${red} [+] Trufflehog Secrets: ${yellow}$(grep -i 'raw' trufflehog-src.txt 2>/dev/null | wc -l)${reset}"
+echo -e "${magenta}[*] Recon Summary:${reset}"
+echo -e "${red} [+] Subdomains     : ${yellow}$(wc -l < subdomains.txt 2>/dev/null)${reset}"
+echo -e "${red} [+] Webdomains     : ${yellow}$(wc -l < webdomains.txt 2>/dev/null)${reset}"
+echo -e "${red} [+] Open Ports     : ${yellow}$(wc -l < naabu.txt 2>/dev/null)${reset}"
+echo -e "${red} [+] URLs Found     : ${yellow}$(wc -l < urls/urls.txt 2>/dev/null)${reset}"
+echo -e "${red} [+] JS Files       : ${yellow}$(wc -l < jsfiles.txt 2>/dev/null)${reset}"
+echo -e "${red} [+] Nuclei Secrets : ${yellow}$(wc -l < js_nuclei.txt 2>/dev/null)${reset}"
+echo -e "${red} [+] Trufflehog     : ${yellow}$(grep -i 'raw' trufflehog-src.txt 2>/dev/null | wc -l)${reset}"
